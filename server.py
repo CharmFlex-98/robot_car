@@ -7,14 +7,20 @@ import numpy as np
 import commander
 from utils import draw
 
+# import gesture
+# import pyautogui
+
+cam_width, cam_height = 500, 500
 cam = True
 server = True
-object_tracking = True
-target_item_name = 'bottle'
+object_tracking = False
+object_detection = True
+gesture_control = False
+target_item_name = 'person'
 image_path = r'C:\Users\ASUS\PycharmProjects\Pytorch\Yolov3\cheongbakProject\01905.jpg'
-names_path = r'C:\Users\ASUS\darknet\build\darknet\x64\data\coco.names'
-cfg_path = r'C:\Users\ASUS\darknet\build\darknet\x64\cfg\yolov4-tiny.cfg'
-weights_path = r'C:\Users\ASUS\darknet\build\darknet\x64\weights\yolov4-tiny.weights'
+names_path = '/home/jiaming/Desktop/darknet/darknet/data/coco.names'
+cfg_path = '/home/jiaming/Desktop/darknet/darknet/cfg/yolov4-tiny.cfg'
+weights_path = '/home/jiaming/Desktop/darknet/darknet/weights/yolov4-tiny.weights'
 width = 416
 height = 416
 confidence_threshold = 0.2
@@ -130,6 +136,24 @@ def class_colour(classes):
         class_colour_dict[_class] = colour
 
 
+def gesture_instruction(_frame):
+    hand_gesture.preprocess(_frame)
+    hand_gesture.find_hand(_frame)
+    hand_gesture.find_position(_frame, [4, 8, 12], draw_bbox=False)
+
+    finger_status = hand_gesture.finger_up()
+    if finger_status[1:] == [1, 1, 1, 1]:
+        pyautogui.keyDown('w')
+    elif finger_status[1:] == [0, 1, 0, 0]:
+        pyautogui.keyDown('s')
+    elif finger_status[1:] == [0, 0, 0, 1]:
+        pyautogui.keyDown('d')
+    elif finger_status[1:] == [1, 0, 0, 0]:
+        pyautogui.keyDown('a')
+    else:
+        commander.key_up()
+
+
 with open(names_path, 'r') as file:
     class_names = file.read().rstrip('\n').split('\n')
     class_colour(class_names)
@@ -137,13 +161,18 @@ with open(names_path, 'r') as file:
 model = cv2.dnn.readNetFromDarknet(cfg_path, weights_path)
 model.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
 model.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+layers = model.getLayerNames()
+outputNames = [layers[i[0] - 1] for i in model.getUnconnectedOutLayers()]
+
+if gesture_control:
+    server = True
+    hand_gesture = gesture.HandDetector()
+    my_cam = cv2.VideoCapture(0)
 
 if cam:
     command = commander.commander()
     if not server:
-        camera = cv2.VideoCapture(0)
-        camera.set(3, 500)
-        camera.set(4, 500)
+        camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
     else:
         """实例化用来接收帧的zmq对象"""
         context = zmq.Context()
@@ -155,6 +184,11 @@ if cam:
 
     while True:
         start_time = time.time()
+
+        if gesture_control:
+            cam_success, cam_frame = my_cam.read()
+            gesture_instruction(cam_frame)
+
         if not server:
             success, frame = camera.read()
         else:
@@ -170,28 +204,29 @@ if cam:
                 npimg = np.frombuffer(img, dtype=np.uint8)  # 把这段缓存解码成一维数组
                 frame = cv2.imdecode(npimg, 1)  # 将一维数组解码为图像source
 
-        blob = cv2.dnn.blobFromImage(frame, 1 / 255, (width, height), swapRB=True, crop=False)
-        model.setInput(blob)
-
-        layers = model.getLayerNames()
-        outputNames = [layers[i[0] - 1] for i in model.getUnconnectedOutLayers()]
-        outputs = model.forward(outputNames)  # these are the outputs with results
-
         person = []
         cell_phone = []
         target_item = []
 
-        find_object(outputs, frame)
-        checking(frame)
+        if object_detection:
+            blob = cv2.dnn.blobFromImage(frame, 1 / 255, (width, height), swapRB=True, crop=False)
+            model.setInput(blob)
+            outputs = model.forward(outputNames)  # these are the outputs with results
 
-        if object_tracking:
-            command.find_position(target_item, 1 / 10, frame.shape[1], frame.shape[0])
-            command.action(sep_ratio=1 / 6, frame=frame)
-            if command.has_target:
-                draw_target_class(frame)
+            find_object(outputs, frame)
+            checking(frame)
+
+            if object_tracking:
+                command.find_position(target_item, 1 / 10, frame.shape[1], frame.shape[0])
+                command.action(sep_ratio=1 / 6, frame=frame)
+                if command.has_target:
+                    draw_target_class(frame)
 
         fps = (round(1 / (time.time() - start_time)))
         draw(frame, 'FPS: {}'.format(fps))
+
+        if gesture_control:
+            frame = np.concatenate((frame, cam_frame), axis=1)
 
         cv2.imshow('cam', frame)
         cv2.waitKey(1)
